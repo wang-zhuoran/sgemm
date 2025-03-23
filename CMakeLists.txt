@@ -1,0 +1,13 @@
+cmake_minimum_required(VERSION 3.18)
+
+project(MySGEMMProject LANGUAGES CXX CUDA)
+
+find_package(CUDAToolkit REQUIRED)
+
+add_executable(my_sgemm_v0_global_mem my_sgemm_v0_global_mem.cu)
+
+target_link_libraries(my_sgemm_v0_global_mem PRIVATE CUDA::cudart CUDA::cublas)
+
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_options(my_sgemm_v0_global_mem PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-G>)
+endif()
