@@ -1,3 +1,0 @@
-/home/wzr/projects/sgemm/build/CMakeFiles/my_sgemm_v0_global_mem.dir
-/home/wzr/projects/sgemm/build/CMakeFiles/edit_cache.dir
-/home/wzr/projects/sgemm/build/CMakeFiles/rebuild_cache.dir
