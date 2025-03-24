@@ -1,7 +1,8 @@
 #include<cstdio>
 #include <iostream>
 #include <chrono>
-#include <cstring>  
+#include <cstring>       // for memset
+
 #define A(i, j) a[(i) * n + (j)]
 #define B(i, j) b[(i) * n + (j)]
 #define abs(x) ((x) < 0.0 ? -(x) : (x))
@@ -17,23 +18,20 @@ void random_matrix(int m, int n, float* a) {
     }
 }
 
-float compare_matrices(int m, int n, float *a, float *b) {
-    //    printf("\n---result----\n");
-    //    print_matrix(m, n, a, lda);
-    //    printf("\n-------\n");
-    //    print_matrix(m, n, b, ldb);
-    //    printf("\n-------\n");
+float compare_matrices(int m, int n, float *a, float *b, int a_cols, int b_cols) {
     int i, j;
     float max_diff = 0.0, diff;
     int printed = 0;
   
     for (i = 0; i < m; i++) {
       for (j = 0; j < n; j++) {
-        diff = abs(A(i, j) - B(i, j));
+        float a_val = a[i * a_cols + j];  // 正确按 stride 访问
+        float b_val = b[i * b_cols + j];
+        diff = abs(a_val - b_val);
         max_diff = (diff > max_diff ? diff : max_diff);
         if (0 == printed)
           if (max_diff > 0.5f || max_diff < -0.5f) {
-            printf("\n error: i %d  j %d diff %f  got %f  expect %f ", i, j, max_diff, A(i, j), B(i, j));
+            printf("\n error: i %d  j %d diff %f  got %f  expect %f ", i, j, max_diff, a_val, b_val);
             printed = 1;
           }
       }
@@ -41,6 +39,7 @@ float compare_matrices(int m, int n, float *a, float *b) {
   
     return max_diff;
 }
+
 // A: [M][K]
 // B: [K][N]
 // C: [M][N]
@@ -58,34 +57,39 @@ void cpu_sgemm(float* A_ptr, float* B_ptr, float* C_ptr, const int M, const int 
 // A: [M][K]
 // B: [K][N]
 // C: [M][N]
+template <unsigned int BLOCK_SIZE, unsigned int K_>
 __global__ void cuda_gemm(float* A_ptr, float* B_ptr, float* C_ptr, const int M, const int N, const int K) {
     const int x = blockDim.x * blockIdx.x + threadIdx.x;
     const int y = blockDim.y * blockIdx.y + threadIdx.y;
     if (x >= N || y >= M) return; 
     float* A_ptr_start = A_ptr + blockDim.y * blockIdx.y * K; 
-    // A矩阵的初始位置加上 y方向上走了多少步，乘每一步跨越的元素个数也就是K 
     float* B_ptr_start = B_ptr + blockDim.x * blockIdx.x;
-    // B矩阵的初始位置加上x方向上走了多少步
+
+    __shared__ float a_shared[BLOCK_SIZE][K_];
+    __shared__ float b_shared[K_][BLOCK_SIZE];
+
+    for(int s = 0; s < K; s += blockDim.x) {
+        a_shared[threadIdx.y][threadIdx.x + s] = A_ptr_start[threadIdx.x + s + threadIdx.y * K];
+        b_shared[threadIdx.y + s][threadIdx.x] = B_ptr_start[threadIdx.x + (s + threadIdx.y) * N];
+    }
+    
+    __syncthreads();
+
     float temp = 0.f;
     for(int k = 0; k < K; k++) {
-        temp += A_ptr_start[threadIdx.y * K + k] * B_ptr_start[k * N + threadIdx.x];
-        // A_ptr_start[threadIdx.y * K + k] 在block内部在y方向上走了多少步，乘每一步跨越的元素个数，加上x方向的偏移量k
-        // 访问 A 中第 threadIdx.y 行，第 k 列的元素
-        // B_ptr_start[k * N + threadIdx.x] 每个 k 对应的是 B 的第 k 行，每一行有 N 个元素
-        // 所以 k*N + threadIdx.x 表示访问第 k 行第 threadIdx.x 列的元素，即 B[k][threadIdx.x]
-        // 在 block 内部在 x 方向上走了多少步，加上跨越的之前所有元素 k*N
+        temp += a_shared[threadIdx.y][k] * b_shared[k][threadIdx.x];
     }
 
     C_ptr[x + y * N] = temp;
-    //纵向每走一步跨越 N 个元素，加上 x 方向的偏移量
+    
 }
 
 int main(){
     printf("Hello, SGEMM!\n");
 
-    int m = 512;
-    int n = 512;
-    int k = 512;
+    int m = 256;
+    int n = 256;
+    constexpr int k = 256;
 
     const size_t mem_size_A = m * k * sizeof(float);
     const size_t mem_size_B = k * n * sizeof(float);
@@ -125,13 +129,13 @@ int main(){
     constexpr int BLOCK = 16;
     dim3 block(BLOCK, BLOCK);
     dim3 grid((m + BLOCK - 1) / BLOCK, (n + BLOCK - 1) / BLOCK);
-    // cuda_gemm<<<grid, block>>>(matrix_A_device, matrix_B_device, matrix_C_device, m, n, k);
+    // cuda_gemm<BLOCK, BLOCK><<<grid, block>>>(matrix_A_device, matrix_B_device, matrix_C_device, m, n, k);
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
 
     cudaEventRecord(start);
-    cuda_gemm<<<grid, block>>>(matrix_A_device, matrix_B_device, matrix_C_device, m, n, k);
+    cuda_gemm<BLOCK, k><<<grid, block>>>(matrix_A_device, matrix_B_device, matrix_C_device, m, n, k);
     cudaEventRecord(stop);
 
     cudaMemcpy(matrix_C_host_gpu_calc, matrix_C_device, mem_size_C, cudaMemcpyDeviceToHost);
@@ -143,9 +147,10 @@ int main(){
 
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
+
     cudaMemcpy(matrix_C_host_gpu_calc, matrix_C_device, mem_size_C, cudaMemcpyDeviceToHost);
 
-    float diff = compare_matrices(m, n, matrix_C_host_gpu_calc, matrix_C_host_cpu_calc);
+    float diff = compare_matrices(m, n, matrix_C_host_gpu_calc, matrix_C_host_cpu_calc, k, n);
 
     printf("error: %f \n", diff);
 
