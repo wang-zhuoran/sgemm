@@ -55,6 +55,28 @@ void cpu_sgemm(float* A_ptr, float* B_ptr, float* C_ptr, const int M, const int 
     }
 }
 
+/*
+
+   ← s tile loop (K dimension)
+    ┌────────────────────────────┐
+    │  load A_tile to smem       │
+    │  load B_tile to smem       │
+    │  __syncthreads()           │
+    │                            │
+    │  ← k loop over tile depth  │
+    │   ┌─────────────────────┐  │
+    │   │  load A col to reg  │  │
+    │   │  load B row to reg  │  │
+    │   │  temp += A × Bᵀ     │  │ ← outer product
+    │   └─────────────────────┘  │
+    │                            │
+    │  __syncthreads()           │
+    └────────────────────────────┘
+
+→ Write back temp[2][2] to global C
+
+*/
+
 #define FETCH_FLOAT4(pointer) (reinterpret_cast<float4 *>(&(pointer))[0])
 
 // A: [M][K]
@@ -67,7 +89,7 @@ template <unsigned int M_NUM_PER_BLOCK,
 __global__ void cuda_gemm(float* A_ptr, float* B_ptr, float* C_ptr, const int M, const int N, const int K) {
     int tx = threadIdx.x;
     int ty = threadIdx.y;
-    int tid = ty * blockDim.x + tx;
+    int tid = ty * blockDim.x + tx; // 重排
     int ctx = tid % 16;
     int cty = tid / 16;
     float* A_ptr_start = A_ptr + blockIdx.y * M_NUM_PER_BLOCK * K;
